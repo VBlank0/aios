@@ -1,0 +1,1 @@
+/usr/bin/loongarch64-linux-gnu-g++ -g -Wl,--dependency-file=CMakeFiles/debug.dir/link.d CMakeFiles/debug.dir/main.cpp.o CMakeFiles/debug.dir/Src/GPIO.cpp.o CMakeFiles/debug.dir/Src/pwm_atim.cpp.o CMakeFiles/debug.dir/Src/encoder.cpp.o CMakeFiles/debug.dir/Src/pwm_gtim.cpp.o CMakeFiles/debug.dir/Src/PwmController.cpp.o CMakeFiles/debug.dir/Src/register.cpp.o -o debug

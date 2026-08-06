@@ -1,0 +1,22 @@
+{
+    "name": "LoongArch64_Cross-Build Environment",
+    // 👇 让 VS Code 知道通过你刚刚写的 Dockerfile 来构建容器
+    "build": {
+    "dockerfile": "Dockerfile",
+    "options": [
+        "--network=host"
+    ]
+    },
+    "runArgs": [
+        "--network=host"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools-extension-pack"
+            ]
+        }
+    },
+    "containerUser": "root",
+    "remoteUser": "root"
+}
