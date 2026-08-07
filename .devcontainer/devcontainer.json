@@ -8,8 +8,11 @@
     ]
     },
     "runArgs": [
-        "--network=host"
+        "--network=host",
+        "--privileged"
     ],
+    // 兜底：入口脚本异常时再手动拉起 dockerd
+    "postCreateCommand": "bash /usr/local/share/docker-init.sh || true",
     "customizations": {
         "vscode": {
             "extensions": [

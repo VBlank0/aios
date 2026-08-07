@@ -26,6 +26,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++-loongarch64-linux-gnu \
     # gdb代码调试工具
     gdb-multiarch \
+    # ranger 文件管理器，方便我自己操作
+    ranger \
+    # ===== Docker-in-Docker：在容器内跑嵌套 Docker（A/B 分区用）=====
+    # 注意：Debian trixie 中 docker.io 只提供 daemon(dockerd)，CLI 需单独装 docker-cli
+    docker.io \
+    docker-cli \
+    # 控制器脚本使用（纯 stdlib，无需 pip）
+    python3 \
     # 清理缓存以精简 Docker 镜像体积
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -40,3 +48,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 设置工作目录
 WORKDIR /workspace
+
+# ==============================================================================
+# 阶段 4：Docker-in-Docker 启动入口
+# 容器一启动就先拉起 dockerd（等它就绪），再执行 VS Code 的主进程
+# ==============================================================================
+COPY docker-init.sh /usr/local/share/docker-init.sh
+RUN chmod +x /usr/local/share/docker-init.sh
+
+ENTRYPOINT ["/usr/local/share/docker-init.sh"]

@@ -15,13 +15,6 @@ project(loongarch64)
 # 4. 引入头文件目录和源文件
 include_directories(Inc)
 set(SOURCES
-    "main.cpp"
-    "Src/GPIO.cpp"
-    "Src/pwm_atim.cpp"
-    "Src/encoder.cpp"
-    "Src/pwm_gtim.cpp"
-    "Src/PwmController.cpp"
-    "Src/register.cpp"
 )
 
 # 5. 生成可执行文件（注意 loongarch64 和 ${SOURCES} 之间必须有空格！）

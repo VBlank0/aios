@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# aios — git 风格的多代快照系统控制器
+#
+# 概念：把 debian dev container 当作"grub 层 + 大文件夹"，
+#       所有用户/AI 操作都在 aios-workspace 容器（当前 checkout 的代）内完成。
+#       回滚 = 回到 debian 层执行 aios checkout <gen> 切换系统镜像。
+#
+# 命令（仿 git）：
+#   aios init [base_image]      初始化：建 gen-0 并启动工作区容器
+#   aios commit [msg]           把当前工作区状态 docker commit 成新一代
+#   aios checkout <gen>         停掉工作区，用指定代镜像重建（挂同一共享卷）
+#   aios rollback               回到上一个健康代
+#   aios log                    查看历代记录
+#   aios status                 查看当前代与健康状态
+# ==============================================================================
+set -euo pipefail
+
+# ---------------- 全局配置 ----------------
+WORKSPACE_NAME="aios-workspace"
+USER_VOLUME="aios-userdata"
+USER_MOUNT="/home/user"
+REGISTRY_DIR="/workspaces/aios/generations"
+GEN_JSON_DIR="$REGISTRY_DIR/json"
+HEAD_FILE="$REGISTRY_DIR/HEAD"
+GEN_PREFIX="aios:gen-"
+
+# 基础镜像名（aios init 用）
+BASE_IMAGE="${AIOS_BASE_IMAGE:-aios:base}"
+
+# ---------------- 工具函数 ----------------
+
+log()  { echo "[aios] $*"; }
+die()  { echo "[aios] ERROR: $*" >&2; exit 1; }
+
+require_docker() {
+    command -v docker >/dev/null 2>&1 || die "docker CLI 不可用"
+    docker info >/dev/null 2>&1 || die "dockerd 未运行"
+}
+
+require_daemon() {
+    require_docker
+}
+
+gen_image() { echo "${GEN_PREFIX}$1"; }
+
+# 读取当前 HEAD（整数，未初始化返回 -1）
+head_gen() {
+    if [ -f "$HEAD_FILE" ]; then
+        cat "$HEAD_FILE"
+    else
+        echo "-1"
+    fi
+}
+
+set_head() { echo "$1" > "$HEAD_FILE"; }
+
+# 确保注册表 git 仓库存在
+ensure_registry() {
+    mkdir -p "$GEN_JSON_DIR"
+    if [ ! -d "$REGISTRY_DIR/.git" ]; then
+        git init -q "$REGISTRY_DIR"
+        git -C "$REGISTRY_DIR" config user.email "aios@local"
+        git -C "$REGISTRY_DIR" config user.name "aios"
+        echo "[aios] registry git repo initialized at $REGISTRY_DIR"
+    fi
+}
+
+# 写入一代的元数据 JSON
+write_gen_json() {
+    local gen="$1" image_id="$2" msg="$3" parent="$4"
+    cat > "$GEN_JSON_DIR/gen-$gen.json" <<EOF
+{
+  "gen": $gen,
+  "image": "$(gen_image "$gen")",
+  "image_id": "$image_id",
+  "message": "$msg",
+  "parent": $parent,
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+    git -C "$REGISTRY_DIR" add -A
+    git -C "$REGISTRY_DIR" commit -q -m "gen-$gen: $msg" || true
+}
+
+# ---------------- 子命令 ----------------
+
+cmd_init() {
+    local base="$1"
+    require_daemon
+    ensure_registry
+    [ "$(head_gen)" = "-1" ] || die "already initialized (HEAD=$(head_gen)); use aios checkout"
+
+    local build_ctx="/workspaces/aios/images/workspace"
+    if [ -n "$base" ]; then
+        log "using provided base image: $base"
+        docker image inspect "$base" >/dev/null 2>&1 || die "base image '$base' not found"
+    else
+        log "building base image from $build_ctx/Dockerfile ..."
+        docker build -t "$BASE_IMAGE" "$build_ctx"
+        base="$BASE_IMAGE"
+    fi
+
+    # 创建共享用户卷（已存在则复用）
+    docker volume inspect "$USER_VOLUME" >/dev/null 2>&1 || docker volume create "$USER_VOLUME" >/dev/null
+
+    # 清理旧工作区
+    docker rm -f "$WORKSPACE_NAME" >/dev/null 2>&1 || true
+
+    # 启动工作区容器（gen-0）
+    log "starting workspace container from $base ..."
+    docker run -d --name "$WORKSPACE_NAME" \
+        --hostname "$WORKSPACE_NAME" \
+        -v "$USER_VOLUME:$USER_MOUNT" \
+        "$base" >/dev/null
+
+    local img_id
+    # 将基础镜像同时打上 gen-0 标签，保证"每代都有 aios:gen-N 镜像"这一不变量
+    docker tag "$base" "$(gen_image 0)" >/dev/null
+    img_id=$(docker inspect --format '{{.Id}}' "$(gen_image 0)")
+    set_head 0
+    write_gen_json 0 "$img_id" "init" -1
+    log "initialized gen-0 (image=$base)"
+    cmd_status
+}
+
+cmd_commit() {
+    local msg="${1:-commit}"
+    require_daemon
+    [ "$(head_gen)" = "-1" ] && die "not initialized; run aios init first"
+    docker inspect "$WORKSPACE_NAME" >/dev/null 2>&1 || die "workspace container not found"
+
+    local cur next new_img img_id
+    cur=$(head_gen)
+    next=$((cur + 1))
+    new_img=$(gen_image "$next")
+
+    log "committing workspace as $new_img ..."
+    img_id=$(docker commit "$WORKSPACE_NAME" "$new_img")
+    write_gen_json "$next" "$img_id" "$msg" "$cur"
+    set_head "$next"
+    log "committed gen-$next ($new_img)  <-  HEAD=$next"
+}
+
+cmd_checkout() {
+    local target="$1"
+    require_daemon
+    [ "$(head_gen)" = "-1" ] && die "not initialized; run aios init first"
+    local cur
+    cur=$(head_gen)
+
+    local target_img
+    target_img=$(gen_image "$target")
+    docker image inspect "$target_img" >/dev/null 2>&1 || die "gen-$target does not exist (image $target_img not found)"
+
+    if [ "$cur" = "$target" ]; then
+        log "already on gen-$target"
+        return 0
+    fi
+
+    log "switching gen-$cur -> gen-$target ..."
+    docker stop "$WORKSPACE_NAME" >/dev/null 2>&1 || true
+    docker rm "$WORKSPACE_NAME" >/dev/null 2>&1 || true
+    docker run -d --name "$WORKSPACE_NAME" \
+        --hostname "$WORKSPACE_NAME" \
+        -v "$USER_VOLUME:$USER_MOUNT" \
+        "$target_img" >/dev/null
+    set_head "$target"
+    log "now on gen-$target (shared user volume preserved)"
+}
+
+cmd_rollback() {
+    require_daemon
+    local cur
+    cur=$(head_gen)
+    [ "$cur" = "-1" ] && die "not initialized"
+    [ "$cur" -eq 0 ] && die "already at gen-0, nothing to roll back to"
+
+    local parent
+    parent=$(python3 -c "import json;print(json.load(open('$GEN_JSON_DIR/gen-$cur.json'))['parent'])")
+    log "rolling back gen-$cur -> gen-$parent"
+    cmd_checkout "$parent"
+}
+
+cmd_log() {
+    local cur
+    cur=$(head_gen)
+    [ "$cur" = "-1" ] && die "not initialized"
+    echo "GEN     IMAGE         MESSAGE"
+    echo "-----------------------------"
+    while [ "$cur" -ge 0 ]; do
+        local f="$GEN_JSON_DIR/gen-$cur.json"
+        if [ -f "$f" ]; then
+            local img msg
+            img=$(python3 -c "import json;print(json.load(open('$f'))['image'])")
+            msg=$(python3 -c "import json;print(json.load(open('$f'))['message'])")
+            printf "gen-%-5s %-13s %s\n" "$cur" "$img" "$msg"
+            cur=$(python3 -c "import json;print(json.load(open('$f'))['parent'])")
+        else
+            break
+        fi
+    done
+}
+
+cmd_status() {
+    local cur
+    cur=$(head_gen)
+    if [ "$cur" = "-1" ]; then
+        echo "[aios] not initialized"
+        return 0
+    fi
+    local running="-"
+    if docker inspect "$WORKSPACE_NAME" >/dev/null 2>&1; then
+        running=$(docker inspect --format '{{.State.Status}}' "$WORKSPACE_NAME")
+    fi
+    local health="-"
+    if [ "$running" = "running" ]; then
+        if docker exec "$WORKSPACE_NAME" /usr/local/bin/health.sh >/dev/null 2>&1; then
+            health="ok"
+        else
+            health="UNHEALTHY"
+        fi
+    fi
+    echo "[aios] HEAD       : gen-$cur"
+    echo "[aios] image      : $(gen_image "$cur")"
+    echo "[aios] workspace  : $WORKSPACE_NAME ($running)"
+    echo "[aios] user volume: $USER_VOLUME -> $USER_MOUNT"
+    echo "[aios] health     : $health"
+}
+
+# ---------------- 入口 ----------------
+
+usage() {
+    cat <<'EOF'
+aios — git 风格多代快照系统控制器
+
+用法:
+  aios init [base_image]    初始化：建 gen-0 并启动工作区（默认从 images/workspace 构建）
+  aios commit [msg]         把当前工作区状态提交为新的一代
+  aios checkout <gen>       切换到指定代（停工作区→用该代镜像重建，共享卷保留）
+  aios rollback             回到上一个健康代
+  aios log                  查看历代记录
+  aios status               查看当前代、工作区与健康状态
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    init)     cmd_init "${1:-}" ;;
+    commit)   cmd_commit "${1:-commit}" ;;
+    checkout) [ $# -ge 1 ] || die "usage: aios checkout <gen>"; cmd_checkout "$1" ;;
+    rollback) cmd_rollback ;;
+    log)      cmd_log ;;
+    status)   cmd_status ;;
+    *)        usage ;;
+esac
