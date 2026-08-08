@@ -6,7 +6,7 @@
 #   - 提供 health.sh 健康探针（返回 0 = 健康）
 #   - 入口脚本保持容器常驻，可随时 docker exec 进去操作
 # ==============================================================================
-FROM alpine:3.20
+FROM alpine:3.21
 
 # 槽位标识：构建时传入 --build-arg SLOT_ID=A（或 B）
 ARG SLOT_ID=unknown
