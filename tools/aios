@@ -20,7 +20,9 @@ set -euo pipefail
 WORKSPACE_NAME="aios-workspace"
 USER_VOLUME="aios-userdata"
 USER_MOUNT="/home/user"
-REGISTRY_DIR="/workspaces/aios/generations"
+# 仓库根目录：由脚本自身位置动态推导（支持把仓库放在任意路径，如 /workspaces/aios 或 /home/vmuser/vblank/aios）
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REGISTRY_DIR="$REPO_DIR/generations"
 GEN_JSON_DIR="$REGISTRY_DIR/json"
 HEAD_FILE="$REGISTRY_DIR/HEAD"
 GEN_PREFIX="aios:gen-"
@@ -118,7 +120,7 @@ cmd_init() {
     ensure_registry
     [ "$(head_gen)" = "-1" ] || die "already initialized (HEAD=$(head_gen)); use aios checkout"
 
-    local build_ctx="/workspaces/aios/images/workspace"
+    local build_ctx="$REPO_DIR/images/workspace"
     if [ -n "$base" ]; then
         log "using provided base image: $base"
         docker image inspect "$base" >/dev/null 2>&1 || die "base image '$base' not found"
