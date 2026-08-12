@@ -5,8 +5,8 @@
 # ==============================================================================
 FROM alpine:3.21
 
-# 基础工具：bash 便于交互
-RUN apk add --no-cache bash \
+# 基础工具：fish 便于交互
+RUN apk add --no-cache bash fish \
     && echo "gen-0" > /etc/aios-gen
 
 # ---- 用户文件区（各代共用）----

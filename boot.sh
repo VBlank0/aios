@@ -15,4 +15,4 @@ if [ "$($SUDO docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/nu
 fi
 
 #进入容器
-$SUDO docker exec -it "$CONTAINER_NAME" /bin/bash
+$SUDO docker exec -it "$CONTAINER_NAME" /usr/bin/fish
