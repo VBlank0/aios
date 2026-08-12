@@ -1,3 +1,0 @@
-/workspaces/Loongarch/build/CMakeFiles/debug.dir
-/workspaces/Loongarch/build/CMakeFiles/edit_cache.dir
-/workspaces/Loongarch/build/CMakeFiles/rebuild_cache.dir
